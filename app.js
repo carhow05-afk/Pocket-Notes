@@ -24,7 +24,103 @@ canvas.onpointerdown=e=>{if(pointer!==null||e.pointerType==='mouse'&&e.button!==
 $('deleteSelection').onclick=()=>{const p=currentPage();if(!selection.length)return notify('Select handwriting using Lasso first');p.strokes=p.strokes.filter((s,i)=>!selection.includes(i));selection=[];touch();redraw()};$('undo').onclick=()=>{const p=currentPage();if(!p.strokes.length)return;redo.push(p.strokes.pop());selection=[];touch();redraw()};$('redo').onclick=()=>{if(!redo.length)return;currentPage().strokes.push(redo.pop());touch();redraw()};$('clear').onclick=()=>{if(!confirm('Clear the handwriting on this page?'))return;currentPage().strokes=[];selection=[];redo=[];touch();redraw()};$('addtext').onclick=()=>{const value=prompt('Text to place on this handwritten page:');if(!value)return;currentPage().texts.push({value,x:105,y:170+currentPage().texts.length*48,size:28,color});touch();redraw()};$('previous').onclick=()=>{if(pageIndex>0){pageIndex--;resetSelection();redraw()}};$('next').onclick=()=>{if(pageIndex<current().pages.length-1){pageIndex++;resetSelection();redraw()}};$('addpage').onclick=()=>{current().pages.push(page());pageIndex=current().pages.length-1;resetSelection();touch();redraw()};$('deletepage').onclick=()=>{if(current().pages.length===1)return notify('Keep at least one page');if(!confirm('Delete this handwritten page?'))return;current().pages.splice(pageIndex,1);pageIndex=Math.min(pageIndex,current().pages.length-1);resetSelection();touch();redraw()};
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000)}function filename(){return (current()?.title||'Pocket Note').replace(/[^a-z0-9 _-]/gi,'').slice(0,60)||'note'}$('png').onclick=()=>{redraw();canvas.toBlob(b=>download(b,filename()+'-page-'+(pageIndex+1)+'.png'),'image/png')};
 async function printNote(){const n=current();if(!n)return;flush();const popup=window.open('','_blank');if(!popup){notify('Allow pop-ups to export a PDF');return}popup.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(n.title||'Pocket Note')+'</title><style>body{font-family:Arial,sans-serif;color:#182135;margin:22px}h1{border-bottom:1px solid #ccc;padding-bottom:8px}p{white-space:pre-wrap;line-height:1.55}.page{break-before:page;page-break-before:always}.page img{width:100%;max-height:95vh;object-fit:contain}.photo{max-width:95%;max-height:60vh}li{padding:5px}small{color:#666}@media print{@page{size:A4;margin:10mm}button{display:none}.page{break-before:page}} </style></head><body><button onclick="print()">Print / Save as PDF</button><h1>'+esc(n.title||'Untitled note')+'</h1><small>'+esc(n.folder)+' · '+esc(n.tags.join(', '))+'</small><p>'+esc(n.body)+'</p><ul>'+n.checklist.map(x=>'<li>'+(x.done?'☑':'☐')+' '+esc(x.text)+'</li>').join('')+'</ul>');for(const photo of n.photos){popup.document.write('<div class="page"><img class="photo" src="'+photo.src+'"><p>'+esc(photo.name)+'</p></div>')}const old=pageIndex;for(let i=0;i<n.pages.length;i++){pageIndex=i;redraw();popup.document.write('<div class="page"><img src="'+canvas.toDataURL('image/png')+'" alt="Handwritten page '+(i+1)+'"></div>')}pageIndex=old;redraw();popup.document.write('<p>PDF attachments are not embedded in this export; export them separately.</p></body></html>');popup.document.close();notify('In the new window choose Print → Save as PDF')}$('pdfexport').onclick=printNote;$('printnote').onclick=printNote;
-$('recognize').onclick=async()=>{if(!('createHandwritingRecognizer'in navigator)){notify('Handwriting recognition is not supported by this browser. You can type a transcription in Text & lists.');return}try{const rec=await navigator.createHandwritingRecognizer({languages:['en']});const strokes=currentPage().strokes.filter(s=>!s.erase&&!s.marker).map(s=>({points:s.points.map(([x,y])=>({x,y,t:0}))}));if(!strokes.length)return notify('No handwriting on this page');const draw=await rec.startDrawing();for(const s of strokes){const st=draw.addStroke();for(const pt of s.points)st.addPoint(pt)}const results=await draw.getPrediction();const value=results?.[0]?.text;if(!value)throw Error('No text recognised');current().body+=(current().body?'\n':'')+value;touch();setTab('type');renderEditor();notify('Handwriting converted to editable text')}catch(e){notify('Recognition unavailable: '+e.message)}};
+// TrOCR is a genuine local ONNX handwriting recognition model, NOT a cloud OCR API.
+// Its files are downloaded on first use by Transformers.js, and cached by the browser.
+let handwritingOCR=null, handwritingOCRLoading=null;
+async function getHandwritingOCR(){
+  if(handwritingOCR)return handwritingOCR;
+  if(!handwritingOCRLoading)handwritingOCRLoading=(async()=>{
+    const {pipeline,env}=await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+    env.useBrowserCache=true;
+    env.allowRemoteModels=true;
+    env.allowLocalModels=false;
+    // TrOCR's encoder/decoder runs ON DEVICE via ONNX Runtime Web.
+    return pipeline('image-to-text','Xenova/trocr-small-handwritten',{
+      quantized:true,
+      progress_callback: info=>{
+        if(info.status==='progress'&&info.file&&typeof info.progress==='number'){
+          $('status').textContent='Downloading recognition model: '+Math.round(info.progress)+'%';
+        }else if(info.status==='ready'){$('status').textContent='Recognition model ready'}
+      }
+    });
+  })();
+  try{handwritingOCR=await handwritingOCRLoading;return handwritingOCR}
+  catch(e){handwritingOCRLoading=null;throw e}
+}
+function handwritingLines(p){
+  // TrOCR was trained to recognise a SINGLE line per image. Keep lines separate.
+  const strokes=p.strokes.filter(s=>!s.erase&&!s.marker&&s.points?.length);
+  if(!strokes.length)return [];
+  const items=strokes.map(s=>{
+    const xs=s.points.map(q=>q[0]),ys=s.points.map(q=>q[1]);
+    return {stroke:s,mid:(Math.min(...ys)+Math.max(...ys))/2,
+      minY:Math.min(...ys),maxY:Math.max(...ys)};
+  }).sort((a,b)=>a.mid-b.mid);
+  let lines=[];
+  for(const item of items){
+    const line=lines.find(l=>Math.abs(l.mid-item.mid)<43);
+    if(line){line.items.push(item);line.mid=line.items.reduce((a,x)=>a+x.mid,0)/line.items.length}
+    else lines.push({items:[item],mid:item.mid});
+  }
+  return lines.sort((a,b)=>a.mid-b.mid).map(l=>l.items.map(x=>x.stroke));
+}
+function lineImage(strokes){
+  const pts=strokes.flatMap(s=>s.points);
+  let minX=Math.min(...pts.map(p=>p[0])),maxX=Math.max(...pts.map(p=>p[0]));
+  let minY=Math.min(...pts.map(p=>p[1])),maxY=Math.max(...pts.map(p=>p[1]));
+  const padding=32;
+  const w=Math.max(80,maxX-minX+2*padding),h=Math.max(45,maxY-minY+2*padding);
+  const c=document.createElement('canvas');c.width=Math.round(w);c.height=Math.round(h);
+  const cx=c.getContext('2d');cx.fillStyle='#fff';cx.fillRect(0,0,c.width,c.height);
+  cx.strokeStyle='#111';cx.fillStyle='#111';cx.lineCap='round';cx.lineJoin='round';
+  for(const s of strokes){
+    cx.lineWidth=Math.max(3,s.size||5);cx.beginPath();
+    s.points.forEach(([x,y],i)=>i?cx.lineTo(x-minX+padding,y-minY+padding):cx.moveTo(x-minX+padding,y-minY+padding));
+    if(s.points.length===1){const [x,y]=s.points[0];cx.arc(x-minX+padding,y-minY+padding,Math.max(3,s.size||5)/2,0,Math.PI*2);cx.fill()}
+    else cx.stroke();
+  }
+  return c.toDataURL('image/png');
+}
+$('ocrCancel').onclick=()=>$('ocrDialog').close();
+$('ocrSave').onclick=()=>{
+  const value=$('ocrText').value.trim();
+  if(!value)return notify('No text to add');
+  const n=current();if(!n)return;
+  n.body+=(n.body?'\n':'')+value;
+  touch();$('ocrDialog').close();setTab('type');renderEditor();
+  notify('Recognised text added; handwriting kept');
+};
+$('recognize').onclick=async()=>{
+  const p=currentPage();if(!p)return;
+  const lines=handwritingLines(p);
+  if(!lines.length)return notify('Draw some handwritten words first');
+  if(lines.length>30)return notify('Please recognise a shorter page (30 lines maximum)');
+  const button=$('recognize'),noteId=current().id,pageNumber=pageIndex;
+  button.disabled=true;
+  try{
+    $('status').textContent='Preparing offline recognition model…';
+    // The model is intentionally loaded only after the user requests conversion.
+    const ocr=await getHandwritingOCR();
+    const output=[];
+    for(let i=0;i<lines.length;i++){
+      $('status').textContent=`Recognising line ${i+1} of ${lines.length}…`;
+      // Never send the image to an online endpoint: model inference is local.
+      const result=await ocr(lineImage(lines[i]),{max_new_tokens:128});
+      const text=String(result?.[0]?.generated_text||'').trim();
+      if(text)output.push(text);
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+    if(current()?.id!==noteId||pageIndex!==pageNumber)return notify('Page changed during recognition. Try again.');
+    if(!output.length)throw Error('No readable handwriting detected. Try writing larger, with separate lines.');
+    $('ocrText').value=output.join('\n');
+    $('ocrDialog').showModal();
+    $('status').textContent='Ready to review recognition';
+  }catch(err){
+    $('status').textContent='Recognition unavailable';
+    notify('Recognition could not run: '+String(err.message||err).slice(0,130));
+    alert('Handwriting recognition was unable to run. The first use needs internet to download the model (around 65 MB), and Chrome must have enough free storage and memory. No handwriting has been changed.\n\nDetails: '+String(err.message||err));
+  }finally{button.disabled=false}
+};
 async function photoData(file){const img=await createImageBitmap(file);const c=document.createElement('canvas');const scale=Math.min(1,1200/Math.max(img.width,img.height));c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);c.getContext('2d').drawImage(img,0,0,c.width,c.height);img.close();return c.toDataURL('image/jpeg',.75)}$('addphoto').onclick=()=>$('photoFile').click();$('photoFile').onchange=async e=>{for(const file of [...e.target.files].slice(0,8)){if(!file.type.startsWith('image/'))continue;try{const src=await photoData(file);current().photos.push({id:uid(),name:file.name,src});touch()}catch(err){notify('Could not open photo')}}e.target.value='';renderMedia()};$('addpdf').onclick=()=>$('pdfFile').click();$('pdfFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;if(f.size>2*1024*1024)return notify('PDF over 2 MB: local storage is too small. Use a smaller PDF.');const reader=new FileReader();reader.onload=()=>{current().pdfs.push({id:uid(),name:f.name,src:reader.result});touch();renderMedia()};reader.readAsDataURL(f)};
 function renderMedia(){const n=current();if(!n)return;$('media').innerHTML='<h3>Photos</h3><div class="photo-list">'+n.photos.map(x=>`<div class="attached"><img alt="${esc(x.name)}" src="${x.src}"><div><button class="btn" data-photoadd="${esc(x.id)}">On handwriting page</button><button class="btn danger" data-photoremove="${esc(x.id)}">×</button></div></div>`).join('')+'</div><h3>PDF attachments</h3>'+n.pdfs.map(x=>`<div class="attached"><strong>${esc(x.name)}</strong><div class="row"><button class="btn" data-pdfopen="${esc(x.id)}">Open PDF</button><button class="btn danger" data-pdfremove="${esc(x.id)}">Remove</button></div></div>`).join('')};$('media').onclick=e=>{const b=e.target.closest('button');if(!b)return;const d=b.dataset,n=current();if(d.photoadd){const f=n.photos.find(x=>x.id===d.photoadd);currentPage().images.push({src:f.src,x:120,y:200,w:650,h:450});touch();setTab('draw')}else if(d.photoremove){n.photos=n.photos.filter(x=>x.id!==d.photoremove);touch()}else if(d.pdfremove){n.pdfs=n.pdfs.filter(x=>x.id!==d.pdfremove);touch()}else if(d.pdfopen){const f=n.pdfs.find(x=>x.id===d.pdfopen);const bytes=atob(f.src.split(',')[1]);const buf=new Uint8Array(bytes.length);for(let i=0;i<bytes.length;i++)buf[i]=bytes.charCodeAt(i);const url=URL.createObjectURL(new Blob([buf],{type:'application/pdf'}));window.open(url,'_blank');setTimeout(()=>URL.revokeObjectURL(url),60000)}renderMedia()};
 const encoder=new TextEncoder(),decoder=new TextDecoder();const b64=a=>btoa(String.fromCharCode(...new Uint8Array(a))),unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));async function keyFor(password,salt){const raw=await crypto.subtle.importKey('raw',encoder.encode(password),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:200000,hash:'SHA-256'},raw,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}async function encrypt(obj,password){const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));const k=await keyFor(password,salt);const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,encoder.encode(JSON.stringify(obj)));return {salt:b64(salt),iv:b64(iv),cipher:b64(cipher)}}async function decrypt(v,password){const k=await keyFor(password,unb64(v.salt));return JSON.parse(decoder.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(v.iv)},k,unb64(v.cipher))))}function secretContent(n){return {body:n.body,pages:n.pages,checklist:n.checklist,tags:n.tags,photos:n.photos,pdfs:n.pdfs}}async function seal(n,password){n.vault=await encrypt(secretContent(n),password);n.body='';n.pages=[page()];n.checklist=[];n.tags=[];n.photos=[];n.pdfs=[];delete n._password;delete n._vaultMeta;save()}
