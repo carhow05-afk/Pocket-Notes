@@ -1,30 +1,20 @@
-POCKET NOTES - INSTALLATION
+Pocket Notes Pro — phone-installable offline notes PWA
+=====================================================
 
-A private notes app for Android, iPhone, and desktop. Notes are stored only in this browser on this device, using localStorage. No account and no cloud sync.
+Installation (GitHub Pages):
+1. Export a backup from your EXISTING Pocket Notes first.
+2. Extract this ZIP and upload all seven files into the SAME GitHub Pages folder/repository as your old Pocket Notes app.
+3. Wait for GitHub Pages to deploy. Refresh the website twice in Chrome; if the old interface appears, close and reopen it.
+4. Chrome (Android) → menu → Install app / Add to Home screen.
 
-INSTALL ON ANDROID (CHROME)
-1. Upload ALL files in this folder to the root of a GitHub repository.
-2. Open repository Settings > Pages > Build and deployment.
-3. Set source to 'Deploy from a branch', branch 'main', folder '/ (root)', then Save.
-4. Open the GitHub Pages URL on your phone in Chrome (https://YOURNAME.github.io/REPOSITORY/).
-5. In the Chrome three-dot menu, tap 'Install app' or 'Add to Home screen'.
-6. Open the new Pocket Notes icon on your home screen.
+Data compatibility: Continues using the original 'pocket-notes-v1' localStorage key and imports old strokes into page 1. Do not change the site origin or path. Keep regular JSON backups. Photos and PDFs use storage space quickly, and localStorage is capacity-limited.
 
-You can also use another HTTPS static host. PWA installation and offline caching require HTTPS or localhost. Opening index.html directly lets you try it out but does not install the offline PWA.
+Included: lined/grid/dotted/blank papers, multicolour pens, transparent highlighter, separated eraser layer, lasso-stroke selection/move/delete, multiple pages, typed text and handwriting in the same note, add text to paper, add and annotate photos on handwriting pages, checklists, tags, folder/type/date searching, PIN/password-protected notes using AES-GCM and PBKDF2, PNG page export, complete notes PDF via print → Save as PDF, PDF attachments, offline PWA.
 
-FEATURES
-- Handwrite or sketch on a lined page with finger or stylus; tap Handwriting within any note
-- Pen colours, thickness, eraser, undo and redo, clear page, and PNG export
-- Handwriting saves with each note and is included in JSON backups
-- Existing notes remain intact when upgrading over the same GitHub Pages address
-- Create, edit, delete, pin and search typed/handwritten notes
-- Organise notes in folders
-- Automatic save and offline support after first visit
-- Export and import JSON backups (imports merge on note ID)
-- Responsive phone/desktop layout, PWA home screen icon
-
-IMPORTANT
-- Notes are only stored on this device and in the browser/app storage. Clearing site storage, reinstalling, or switching browsers may delete them.
-- Export regular backups and store them somewhere safe.
-- This app is NOT encrypted or password protected; anyone with access to the unlocked device/browser profile may read its notes.
-- If you change the app code, update CACHE in sw.js so existing installations get new static files.
+Important limits:
+* PDF attachments can be opened and retained locally, but actual drawing on the pages of an imported PDF is NOT implemented. It would require bundling a robust PDF renderer.
+* Handwriting-to-text uses the experimental browser-native Handwriting Recognition API when supported; on most Android browsers this is NOT currently available. There is no cloud OCR fallback.
+* Export to PDF uses the browser's print / Save as PDF and includes typed notes, checklist, photos and handwritten pages; original attached PDFs are separate.
+* The lasso operates on pen strokes, not arbitrary parts of strokes or raster photos.
+* Images are compressed to help storage, but very large notebooks may exceed the browser's storage allowance. Export backups frequently.
+* Passwords cannot be recovered, so keep them safe. Lock notes again before leaving the editor. When unlocked, the current note remains in memory until you lock it or switch notes.
